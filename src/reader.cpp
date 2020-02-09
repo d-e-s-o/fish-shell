@@ -696,6 +696,10 @@ class reader_data_t : public std::enable_shared_from_this<reader_data_t> {
     /// The selection data. If this is not none, then we have an active selection.
     maybe_t<selection_data_t> selection{};
 
+    /// Whether we are currently running update_command_line_from_history_search.
+    /// If true, we must not treat input as potentially editing the command line.
+    bool updating_history_search{false};
+
     wcstring left_prompt_buff;
     wcstring mode_prompt_buff;
     /// The output of the last evaluation of the right prompt command.
@@ -1530,7 +1534,7 @@ static bool command_ends_paging(readline_cmd_t c, bool focused_on_search_field) 
     }
 }
 
-/// Indicates if the given command ends the history search.
+/// Indicates if the given command ends the old history search (used for token search).
 static bool command_ends_history_search(readline_cmd_t c) {
     switch (c) {
         case readline_cmd_t::history_prefix_search_backward:
@@ -1546,6 +1550,20 @@ static bool command_ends_history_search(readline_cmd_t c) {
             return false;
         default:
             return true;
+    }
+}
+
+/// Indicates if the given command unconditionally ends the history search.
+static bool command_always_ends_history_search(readline_cmd_t c) {
+    switch (c) {
+        case readline_cmd_t::accept_autosuggestion:
+        case readline_cmd_t::cancel:
+        case readline_cmd_t::complete:
+        case readline_cmd_t::complete_and_search:
+        case readline_cmd_t::execute:
+            return true;
+        default:
+            return false;
     }
 }
 
@@ -1585,7 +1603,8 @@ void reader_data_t::insert_string(editable_line_t *el, const wcstring &str) {
         el->insert_coalesce(str);
         assert(el->undo_history.may_coalesce);
     } else {
-        el->push_edit(edit_t(el->position(), 0, str));
+        push_edit(el,
+                  {edit_t(el->position(), 0, str)});  // This may modify the history search term.
         el->undo_history.may_coalesce = el->undo_history.try_coalesce || (str.size() == 1);
     }
 
@@ -1596,7 +1615,56 @@ void reader_data_t::insert_string(editable_line_t *el, const wcstring &str) {
     }
 }
 
+/// Whether this edit touches the search string only.
+static size_t editing_search_string(const reader_data_t &data, const edit_t &edit) {
+    size_t s_begin = data.history_search.match_position();
+    const wcstring &search_string = data.history_search.search_string();
+    size_t s_end = s_begin + search_string.size();
+    // Empty commandline ends search (works nicely because a history entry is never empty).
+    if (edit.length == data.command_line.size() && edit.replacement.empty()) {
+        return false;
+    }
+    // If the search string ends at the end of the commandline, don't append to it.
+    if (search_string.empty() && edit.offset == data.command_line.size() &&
+        edit.replacement.size() > 0) {
+        return false;
+    }
+    // If we searched for an empty string, then it always matches at offset 0.
+    // Disable editing here because it feels weird.
+    if (search_string.empty() && edit.offset == 0) {
+        return false;
+    }
+    // Whether the edit stays within the bounds of the search string.
+    return edit.offset >= s_begin && edit.offset + edit.length <= s_end;
+}
+
+/// Whether the current state allows changing the history search string.
+static bool can_update_history_search_string(const reader_data_t &data) {
+    return data.history_search.active() && !data.updating_history_search &&
+           (data.history_search.by_line() || data.history_search.by_prefix());  // TODO token search
+}
+
 void reader_data_t::push_edit(editable_line_t *el, edit_t &&edit) {
+    if (el == &command_line && can_update_history_search_string(*this)) {
+        if (!editing_search_string(*this, edit)) {
+            history_search.reset();
+        } else {
+            size_t match_position1 = history_search.match_position();
+            edit_t search_edit(edit.offset - match_position1, edit.length, edit.replacement);
+            history_search.modify_search_string([&search_edit](wcstring &search_string) {
+                apply_edit(&search_string, search_edit);
+            });
+            command_line_has_transient_edit = false;
+            if (edit.length == 0 && want_to_coalesce_insertion_of(*el, edit.replacement)) {
+                el->insert_coalesce(edit.replacement);
+                assert(el->undo_history.may_coalesce);
+            } else {
+                el->undo_history.may_coalesce = false;  // May be set to true in insert_string.
+                el->push_edit(std::move(edit));
+            }
+            return;
+        }
+    }
     el->push_edit(std::move(edit));
     el->undo_history.may_coalesce = false;
     // The pager needs to be refiltered.
@@ -1884,6 +1952,9 @@ void reader_data_t::accept_autosuggestion(bool full, bool single, move_word_styl
     if (!autosuggestion.empty()) {
         // Accepting an autosuggestion clears the pager.
         pager.clear();
+
+        // Stop history search (to not highlight the entire autosuggestion).
+        history_search.reset();
 
         // Accept the autosuggestion.
         if (full) {
@@ -2369,6 +2440,7 @@ void reader_data_t::clear_transient_edit() {
     if (!command_line_has_transient_edit) {
         return;
     }
+    history_search.reset();
     command_line.undo();
     update_buff_pos(&command_line);
     command_line_has_transient_edit = false;
@@ -2391,21 +2463,34 @@ void reader_data_t::replace_current_token(wcstring &&new_token) {
 
 /// Apply the history search to the command line.
 void reader_data_t::update_command_line_from_history_search() {
+    updating_history_search = true;
     wcstring new_text = history_search.is_at_end() ? history_search.search_string()
                                                    : history_search.current_result();
     editable_line_t *el = active_edit_line();
     if (command_line_has_transient_edit) {
         el->undo();
     }
+    command_line_has_transient_edit = true;
     if (history_search.by_token()) {
         replace_current_token(std::move(new_text));
-    } else {
-        assert(history_search.by_line() || history_search.by_prefix());
+    } else if (history_search.by_line() || history_search.by_prefix()) {
         replace_substring(&command_line, 0, command_line.size(), std::move(new_text));
+    } else {
+        updating_history_search = false;
+        return;
     }
-    command_line_has_transient_edit = true;
-    assert(el == &command_line);
+    // If we have a match of a non-empty string, we move the cursor just after the search term,
+    // so the user can easily edit it to refine the search.
+    if ((history_search.by_line() || history_search.by_prefix())  // TODO token search
+        && !history_search.is_at_end() && !history_search.search_string().empty()) {
+        // Unfortunately this cursor movement is not part of the edit,
+        // so the position will not be the same if you undo + redo.
+        size_t end_of_match =
+            history_search.match_position() + history_search.search_string().size();
+        el->set_position(end_of_match);
+    }
     update_buff_pos(el);
+    updating_history_search = false;
 }
 
 enum move_word_dir_t { MOVE_DIR_LEFT, MOVE_DIR_RIGHT };
@@ -3448,7 +3533,9 @@ void reader_data_t::handle_readline_command(readline_cmd_t c, readline_loop_stat
                     }
                 } else {
                     // Searching by line.
-                    history_search.reset_to_mode(el->text(), history, mode);
+                    history_search.reset_to_mode(
+                        history_search.active() ? history_search.search_string() : el->text(),
+                        history, mode);
 
                     // Skip the autosuggestion in the history unless it was truncated.
                     const wcstring &suggest = autosuggestion.text;
@@ -4052,7 +4139,9 @@ maybe_t<wcstring> reader_data_t::readline(int nchars_or_0) {
 
             handle_readline_command(readline_cmd, rls);
 
-            if (history_search.active() && command_ends_history_search(readline_cmd)) {
+            if (history_search.active() &&
+                (command_always_ends_history_search(readline_cmd) ||
+                 (history_search.by_token() && command_ends_history_search(readline_cmd)))) {
                 // "cancel" means to abort the whole thing, other ending commands mean to finish the
                 // search.
                 if (readline_cmd == rl::cancel) {
@@ -4083,6 +4172,9 @@ maybe_t<wcstring> reader_data_t::readline(int nchars_or_0) {
                 if (el == &command_line) {
                     pager.clear();
                     command_line_has_transient_edit = false;
+                }
+                if (history_search.active() && history_search.by_token()) {
+                    history_search.reset();
                 }
             } else {
                 // This can happen if the user presses a control char we don't recognize. No

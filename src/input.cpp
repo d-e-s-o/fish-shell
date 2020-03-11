@@ -136,6 +136,7 @@ static constexpr const input_function_metadata_t input_function_metadata[] = {
     {L"history-search-forward", readline_cmd_t::history_search_forward},
     {L"history-token-search-backward", readline_cmd_t::history_token_search_backward},
     {L"history-token-search-forward", readline_cmd_t::history_token_search_forward},
+    {L"incremental-search", readline_cmd_t::history_incremental_search_backward},
     {L"insert-line-over", readline_cmd_t::insert_line_over},
     {L"insert-line-under", readline_cmd_t::insert_line_under},
     {L"kill-bigword", readline_cmd_t::kill_bigword},

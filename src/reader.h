@@ -257,6 +257,10 @@ bool check_cancel_from_fish_signal();
 /// Test whether the interactive reader is in search mode.
 bool reader_is_in_search_mode();
 
+/// Get the range of the search string that matches the current history entry. Returns false
+/// if the current command line is not a matched history entry.
+bool reader_get_search_term(size_t *begin, size_t *length);
+
 /// Test whether the interactive reader has visible pager contents.
 bool reader_has_pager_contents();
 

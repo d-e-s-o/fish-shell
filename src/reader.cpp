@@ -338,7 +338,7 @@ class reader_history_search_t {
     std::set<wcstring> skips_;
 
     /// Index into our matches list.
-    size_t match_index_{0};
+    maybe_t<size_t> match_index_;
 
     /// Adds the given match if we haven't seen it before.
     void add_if_new(wcstring text) {
@@ -377,29 +377,33 @@ class reader_history_search_t {
 
     bool move_forwards() {
         // Try to move within our previously discovered matches.
-        if (match_index_ > 0) {
-            match_index_--;
+        if (is_at_end()) return false;
+        if (*match_index_ > 0) {
+            (*match_index_)--;
+            if (*match_index_ == 0) match_index_ = none_t();
             return true;
         }
         return false;
     }
 
     bool move_backwards() {
+        if (is_at_end()) match_index_ = 0;
         // Try to move backwards within our previously discovered matches.
-        if (match_index_ + 1 < matches_.size()) {
-            match_index_++;
+        if (*match_index_ + 1 < matches_.size()) {
+            (*match_index_)++;
             return true;
         }
 
         // Add more items from our search.
         while (search_.go_to_next_match(history_search_direction_t::backward)) {
             if (append_matches_from_search()) {
-                match_index_++;
-                assert(match_index_ < matches_.size() && "Should have found more matches");
+                (*match_index_)++;
+                assert(*match_index_ < matches_.size() && "Should have found more matches");
                 return true;
             }
         }
 
+        match_index_ = none_t();
         // Here we failed to go backwards past the last history item.
         return false;
     }
@@ -428,19 +432,19 @@ class reader_history_search_t {
     }
 
     /// Go to the end (most recent) of the search.
-    void go_to_end() { match_index_ = 0; }
+    void go_to_end() { match_index_ = none_t(); }
 
     /// \return the current search result.
     const wcstring &current_result() const {
-        assert(match_index_ < matches_.size() && "Invalid match index");
-        return matches_.at(match_index_);
+        assert(*match_index_ < matches_.size() && "Invalid match index");
+        return matches_.at(*match_index_);
     }
 
     /// \return the string we are searching for.
     const wcstring &search_string() const { return search_.original_term(); }
 
-    /// \return whether we are at the end (most recent) of our search.
-    bool is_at_end() const { return match_index_ == 0; }
+    /// \return whether the search is currently not at a matching history entry.
+    bool is_at_end() const { return !match_index_.has_value(); }
 
     // Add an item to skip.
     // \return true if it was added, false if already present.
@@ -451,7 +455,7 @@ class reader_history_search_t {
         assert(mode != inactive && "mode cannot be inactive in this setter");
         skips_ = {text};
         matches_ = {text};
-        match_index_ = 0;
+        match_index_ = none_t();
         mode_ = mode;
         history_search_flags_t flags = history_search_no_dedup;
         // Make the search case-insensitive unless we have an uppercase character.
@@ -467,7 +471,7 @@ class reader_history_search_t {
     void reset() {
         matches_.clear();
         skips_.clear();
-        match_index_ = 0;
+        match_index_ = none_t();
         mode_ = inactive;
         search_ = history_search_t();
     }

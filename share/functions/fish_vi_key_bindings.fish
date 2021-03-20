@@ -102,7 +102,8 @@ function fish_vi_key_bindings --description 'vi-like key bindings for fish'
     end
 
     bind -s --preset u history-search-backward
-    bind -s --preset \cr history-search-forward
+    bind -s --preset \cr incremental-search
+    bind -s --preset --mode insert \cr incremental-search
 
     bind -s --preset [ history-token-search-backward
     bind -s --preset ] history-token-search-forward

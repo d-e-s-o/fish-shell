@@ -29,6 +29,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
 #include <stdlib.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
+#include <termios.h>
 #include <unistd.h>
 
 #include <cstring>
@@ -515,6 +516,9 @@ int main(int argc, char **argv) {
     }
 
     if (!opts.batch_cmds.empty()) {
+        struct termios t;
+        bool interactive = isatty(STDIN_FILENO) || (tcgetattr(STDIN_FILENO, &t) == -1 && errno == EIO);
+        scoped_push<bool> int_{&parser.libdata().is_interactive, interactive};
         // Run the commands specified as arguments, if any.
         if (get_login()) {
             // Do something nasty to support OpenSUSE assuming we're bash. This may modify cmds.

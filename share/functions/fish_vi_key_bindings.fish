@@ -1,3 +1,38 @@
+alias vi_dec 'vi_increment_decrement subtract'
+alias vi_inc 'vi_increment_decrement add'
+
+function vi_increment_decrement --description 'increment or decrement numbers with ctrl+x ctrl+a'
+    set lnum (commandline --cursor)
+    set lstr (commandline -b)
+    set num 0
+    set split_str (string split '' $lstr)
+    set the_num (math $lnum + 1)
+    set lchar $split_str[$the_num]
+    set new_string ""
+
+    if string match -qr '^[0-9]+$' $lchar
+        if [ $argv = 'add' ]
+            set new_num (math $lchar + 1)
+        else if [ $argv = 'subtract' ]
+            set new_num (math $lchar - 1)
+        end
+
+        for x in (string split '' $lstr)
+            if [ $num = $lnum ]
+                set new_string (echo $new_string$new_num | string collect)
+            else
+                set new_string (echo $new_string$x | string collect)
+            end
+            set num (math $num + 1)
+        end
+        commandline -r $new_string
+        commandline -C $lnum
+        commandline -f repaint
+    else
+        return
+    end
+end
+
 function fish_vi_key_bindings --description 'vi-like key bindings for fish'
     if contains -- -h $argv
         or contains -- --help $argv
@@ -268,6 +303,12 @@ function fish_vi_key_bindings --description 'vi-like key bindings for fish'
     # in vim (and maybe in vi), <BS> deletes the changes
     # but this binding just move cursor backward, not delete the changes
     bind -s --preset -M replace -k backspace backward-char
+
+    #
+    # increment or decrement numbers with ctrl+x ctrl+a
+    #
+    bind -s --preset -M default \ca vi_inc
+    bind -s --preset -M default \cx vi_dec
 
     #
     # visual mode

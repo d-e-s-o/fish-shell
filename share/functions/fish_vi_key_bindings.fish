@@ -1,3 +1,69 @@
+alias vi_dec 'vi_inc_dec dec'
+alias vi_inc 'vi_inc_dec inc'
+
+# TODO: Currently we do not support hexadecimal and octal values.
+function vi_inc_dec --description 'increment or decrement a number'
+  # The cursor is zero based, but all string functions assume 1 to be
+  # the lowest index. Adjust accordingly.
+  set cursor (math (commandline --cursor) + 1)
+  set line (commandline --current-buffer)
+
+  set candidate (string sub --start $cursor -- $line)
+  if set just_found (string match --ignore-case --regex '^-?[0-9]+' -- $candidate)
+    # Search from the current cursor position backwards for as long as we
+    # can identify a valid number.
+    set found $just_found
+    set found_at $cursor
+    set end (math $cursor + (string length $found) - 1)
+
+    for i in (seq (math $cursor - 1) -1 1)
+      set candidate (string sub --start $i --end $end -- $line)
+      if set just_found (string match --ignore-case --regex '^-?[0-9]+$' -- $candidate)
+        set found $just_found
+        set found_at $i
+        # We found a candidate, but continue to make sure that we captured
+        # the complete number and not just part of it.
+      else
+        # We have already found a number earlier. Work with that.
+        break
+      end
+    end
+  else
+    # We didn't find a match below the cursor. Mirror Vim behavior by
+    # checking ahead as well.
+    for i in (seq (math -- $cursor + 1) (math (string length -- $line) - 1))
+      set candidate (string sub --start $i -- $line)
+
+      if set just_found (string match --ignore-case --regex '^-?[0-9]+' -- $candidate)
+        set found $just_found
+        set found_at $i
+        break
+      end
+    end
+
+    if [ -z "$found" ]
+      return
+    end
+  end
+
+  if [ $argv = 'inc' ]
+    set number (math -- $found + 1)
+  else if [ $argv = 'dec' ]
+    set number (math -- $found - 1)
+  end
+
+  # `string sub` may bitch about `--end` being zero if `found_at` is 1.
+  # So ignore errors here...
+  set before (string sub --end (math -- $found_at - 1) -- $line 2> /dev/null)
+  set after (string sub --start (math -- $found_at + (string length -- $found)) -- $line)
+  commandline --replace -- "$before$number$after"
+  # Need to subtract two here because 1) cursor is zero based 2)
+  # `found_at` is the index of the first character of the match, but we
+  # want the one before that.
+  commandline --cursor -- (math $found_at + (string length -- $number) - 2)
+  commandline --function -- repaint
+end
+
 function fish_vi_key_bindings --description 'vi-like key bindings for fish'
     if contains -- -h $argv
         or contains -- --help $argv
@@ -250,6 +316,12 @@ function fish_vi_key_bindings --description 'vi-like key bindings for fish'
     # in vim (and maybe in vi), <BS> deletes the changes
     # but this binding just move cursor backward, not delete the changes
     bind -s --preset -M replace -k backspace backward-char
+
+    #
+    # increment or decrement numbers with ctrl+x ctrl+a
+    #
+    bind -s --preset -M default \ca vi_inc
+    bind -s --preset -M default \cx vi_dec
 
     #
     # visual mode

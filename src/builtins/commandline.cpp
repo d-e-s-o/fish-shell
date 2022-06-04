@@ -391,7 +391,7 @@ maybe_t<int> builtin_commandline(parser_t &parser, io_streams_t &streams, const 
         transient = ld.transient_commandlines.back();
         current_buffer = transient.c_str();
         current_cursor_pos = transient.size();
-    } else if (rstate.initialized) {
+    } else if (true) {
         current_buffer = rstate.text.c_str();
         current_cursor_pos = rstate.cursor_pos;
     } else {

@@ -74,7 +74,7 @@ const PAGER_MIN_WIDTH: usize = 16;
 pub const PAGER_MIN_HEIGHT: usize = 4;
 
 /// The maximum number of columns of completion to attempt to fit onto the screen.
-const PAGER_MAX_COLS: usize = 6;
+const PAGER_MAX_COLS: usize = 1;
 
 /// Width of the search field.
 const PAGER_SEARCH_FIELD_WIDTH: usize = 12;

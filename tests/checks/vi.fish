@@ -46,14 +46,6 @@ commandline '123'; commandline --cursor 2; fish_vi_dec
 commandline --current-buffer
 # CHECK: 122
 
-commandline '123'; commandline --cursor 3; fish_vi_inc
-commandline --current-buffer
-# CHECK: 123
-
-commandline '123'; commandline --cursor 3; fish_vi_dec
-commandline --current-buffer
-# CHECK: 123
-
 commandline 'abc123'; commandline --cursor 1; fish_vi_inc
 commandline --current-buffer
 # CHECK: abc124

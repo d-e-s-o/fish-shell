@@ -4875,6 +4875,31 @@ impl AutosuggestionResult {
     }
 }
 
+/// Computes the longest common prefix of a collection of strings.
+/// Returns the common prefix (which may be empty if there is no common prefix).
+fn longest_common_prefix<'a>(strings: impl IntoIterator<Item = &'a wstr>) -> WString {
+    let mut iter = strings.into_iter();
+    let Some(first) = iter.next() else {
+        return WString::new();
+    };
+    let mut prefix_len = first.len();
+    for s in iter {
+        let max = std::cmp::min(prefix_len, s.len());
+        let mut idx = 0;
+        while idx < max {
+            if first.as_char_slice()[idx] != s.as_char_slice()[idx] {
+                break;
+            }
+            idx += 1;
+        }
+        prefix_len = idx;
+        if prefix_len == 0 {
+            break;
+        }
+    }
+    first.slice_to(prefix_len).to_owned()
+}
+
 // Returns a function that can be invoked (potentially
 // on a background thread) to determine the autosuggestion
 fn get_autosuggestion_performer(
@@ -4928,6 +4953,10 @@ fn get_autosuggestion_performer(
                 0,
             );
 
+            // Collect all valid matches to compute the longest common prefix.
+            let mut case_sensitive_matches: Vec<WString> = vec![];
+            let mut case_insensitive_matches: Vec<WString> = vec![];
+
             while !ctx.check_cancel() && searcher.go_to_next_match(SearchDirection::Backward) {
                 let item = searcher.current_item();
 
@@ -4935,8 +4964,7 @@ fn get_autosuggestion_performer(
                     let mut matched_part =
                         item.str().starts_with(search_string).then_some(item.str());
                     let mut icase = false;
-                    // Only check for a case-insensitive match if we haven't already found one
-                    if matched_part.is_none() && icase_history_result.is_none() {
+                    if matched_part.is_none() {
                         icase = true;
                         matched_part =
                             string_prefixes_string_case_insensitive(search_string, item.str())
@@ -4958,8 +4986,7 @@ fn get_autosuggestion_performer(
                     let mut matched_part =
                         lines.clone().find(|line| line.starts_with(search_string));
 
-                    // Only check for a case-insensitive match if we haven't already found one
-                    if matched_part.is_none() && icase_history_result.is_none() {
+                    if matched_part.is_none() {
                         icase = true;
                         matched_part = lines.into_iter().find(|line| {
                             string_prefixes_string_case_insensitive(search_string, line)
@@ -4969,28 +4996,44 @@ fn get_autosuggestion_performer(
                     (matched_part, icase)
                 };
                 let Some(matched_part) = matched_part else {
-                    assert!(
-                        icase_history_result.is_some(),
-                        "couldn't find line matching search {search_string:?} in history item {item:?} (did history search yield a bogus result?)"
-                    );
                     continue;
                 };
 
                 if autosuggest_validate_from_history(item, &working_directory, &ctx) {
-                    // The command autosuggestion was handled specially, so we're done.
-                    let is_whole = matched_part.len() == item.str().len();
-                    let result = AutosuggestionResult::new(
-                        command_line.clone(),
-                        range.clone(),
-                        matched_part.into(),
-                        icase,
-                        is_whole,
-                    );
                     if icase {
-                        icase_history_result = Some(result);
+                        case_insensitive_matches.push(matched_part.to_owned());
                     } else {
-                        return result;
+                        case_sensitive_matches.push(matched_part.to_owned());
                     }
+                }
+            }
+
+            // Compute the longest common prefix of all matches.
+            // Prefer case-sensitive matches over case-insensitive ones.
+            let (matches, icase) = if !case_sensitive_matches.is_empty() {
+                (case_sensitive_matches, false)
+            } else if !case_insensitive_matches.is_empty() {
+                (case_insensitive_matches, true)
+            } else {
+                continue;
+            };
+
+            let lcp = longest_common_prefix(matches.iter().map(|s| s.as_ref()));
+            // Only suggest if the LCP is longer than the search string.
+            if lcp.len() > search_string.len() {
+                // The suggestion is a "whole item" only if all matches are identical to the LCP.
+                let is_whole = matches.len() == 1 && matches[0].len() == lcp.len();
+                let result = AutosuggestionResult::new(
+                    command_line.clone(),
+                    range.clone(),
+                    lcp,
+                    icase,
+                    is_whole,
+                );
+                if icase {
+                    icase_history_result = Some(result);
+                } else {
+                    return result;
                 }
             }
         }
@@ -6809,11 +6852,42 @@ impl<'a> Reader<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{combine_command_and_autosuggestion, completion_apply_to_command_line};
+    use super::{combine_command_and_autosuggestion, completion_apply_to_command_line, longest_common_prefix};
     use crate::complete::CompleteFlags;
     use crate::operation_context::{OperationContext, no_cancel};
     use crate::tests::prelude::*;
     use crate::wchar::prelude::*;
+
+    #[test]
+    fn test_longest_common_prefix() {
+        // Empty input returns empty string
+        let empty: Vec<&wstr> = vec![];
+        assert_eq!(longest_common_prefix(empty), L!(""));
+
+        // Single string returns itself
+        assert_eq!(longest_common_prefix([L!("hello")]), L!("hello"));
+
+        // Two identical strings
+        assert_eq!(longest_common_prefix([L!("hello"), L!("hello")]), L!("hello"));
+
+        // Common prefix exists
+        assert_eq!(longest_common_prefix([L!("echo a b c"), L!("echo a c d")]), L!("echo a "));
+
+        // No common prefix beyond the search string
+        assert_eq!(longest_common_prefix([L!("echo abc"), L!("echo xyz")]), L!("echo "));
+
+        // Multiple strings with varying lengths
+        assert_eq!(
+            longest_common_prefix([L!("prefix_long_suffix"), L!("prefix_long"), L!("prefix_longer")]),
+            L!("prefix_long")
+        );
+
+        // No common prefix at all
+        assert_eq!(longest_common_prefix([L!("abc"), L!("xyz")]), L!(""));
+
+        // Common prefix is empty when first chars differ
+        assert_eq!(longest_common_prefix([L!("abc"), L!("def"), L!("ghi")]), L!(""));
+    }
 
     #[test]
     fn test_autosuggestion_combining() {
